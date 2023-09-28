@@ -64,3 +64,10 @@ export { type JWTOptions, type JWTVerifyOptions } from './JWT.js'
 export { base64ToBytes, base58ToBytes, hexToBytes, genX25519EphemeralKeyPair } from './util.js'
 
 export * from './Errors.js'
+
+export {
+  createArrayElementDisclosure,
+  createObjectPropertyDisclosure,
+  makeSelectivelyDisclosable as createSelectiveDisclosures,
+  decodeSdJWT,
+} from './SD-JWT.js'
