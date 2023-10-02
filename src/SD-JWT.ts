@@ -4,8 +4,28 @@ import { sha256 } from '@noble/hashes/sha256'
 import { JWTDecoded, JWTHeader, JWTOptions, JWTPayload, createJWT, decodeJWT } from './JWT.js'
 
 const MINIMUM_SALT_LENGTH = 16
-const DISCLOSURE_SEPARATOR = '~'
 const DEFAULT_SD_ALG = 'sha-256'
+
+export interface SdJWTPayload extends JWTPayload {
+  _sd_alg: string
+  _sd?: string[]
+}
+export interface SdJWTOptions extends JWTOptions {
+  disclosures: string[]
+  kb_jwt?: string
+}
+
+export interface SdJWTDecoded extends JWTDecoded {
+  payload: SdJWTPayload
+  kb_jwt?: string
+}
+
+export interface CreateDisclosureOptions {
+  salt?: string
+  specCompatStringify?: boolean
+}
+
+/* Internal types */
 
 // Used to ensure that the value is a JSON type; see 5.2.1 SD-JWT
 type JSONPrimitive = string | number | boolean | null
@@ -24,141 +44,93 @@ interface ObjectPropertyDisclosure extends Disclosure {
   key: string
 }
 
-interface SdJWTPayload extends JWTPayload {
-  _sd_alg: string
-  _sd?: string[]
-}
+/*
+interface SdJWTVerified extends JWTVerified {
+  payload: Partial<SdJWTPayload>
+}*/
 
-export function createSalt(length = MINIMUM_SALT_LENGTH): string {
-  return bytesToBase64url(randomBytes(length))
-}
-
-/**
- * Create an object property disclosure as described in SD-JWT spec 5.2.1. Disclosures for Object Properties.
- *
- * Optionally pass in a salt, which is useful for testing against SD-JWT test vectors. Otherwise one will be generated.
- *
- * @export
- * @param {string} key
- * @param {JSONValue} value
- * @param {string} [salt]
- * @return {*}  {string}        base64url-encoded disclosure
- */
-export function createObjectPropertyDisclosure(key: string, value: JSONValue, salt?: string): string {
-  salt = salt || createSalt()
-  const disclosure: ObjectPropertyDisclosure = { salt: salt, key: key, value: value }
-  return encodeDisclosure(disclosure)
-}
-
-/**
- * Create an array element disclosure as described in SD-JWT spec 5.2.2. Disclosures for Array Elements.
- *
- * Optionally pass in a salt, which is useful for testing against SD-JWT test vectors. Otherwise one will be generated.
- *
- * @export
- * @param {JSONValue} arrayElement
- * @param {string} [salt]
- * @return {*}  {string}        base64url-encoded disclosure
- */
-export function createArrayElementDisclosure(arrayElement: JSONValue, salt?: string): string {
-  salt = salt || createSalt()
-  const disclosure: ArrayElementDisclosure = { salt: salt, value: arrayElement }
-  return encodeDisclosure(disclosure)
-}
-
-function encodeDisclosure(disclosure: Disclosure) {
-  const stringifiedElements = stringifyWorkaround(disclosure)
-  const asBytes = stringToBytes(stringifiedElements)
-  return bytesToBase64url(asBytes)
-}
-
-/**
- * JSON.stringify workaround for arrays, in order to match SD-JWT spec.
- *
- * Stringify element-wise and join with commas, space-separated.
- *
- * @param {Disclosure} disclosure
- * @return {*}  {string}
- */
-function stringifyWorkaround(disclosure: Disclosure): string {
-  const elements = [JSON.stringify(disclosure.salt)]
-
-  if (Object.prototype.hasOwnProperty.call(disclosure, 'key')) {
-    const objectPropertyDisclosure = disclosure as ObjectPropertyDisclosure
-    elements.push(JSON.stringify(objectPropertyDisclosure.key))
-  }
-
-  elements.push(JSON.stringify(disclosure.value))
-
-  return `[${elements.join(', ')}]`
-}
-
-/**
- *
- * Hash a disclosure using the specified hash algorithm.
- *
- * @export
- * @param {string} disclosure           base64url-encoded disclosure TODO: add regex to test
- * @param {string} [sd_alg=DEFAULT_SD_ALG]     hash algorithm to use for disclosures
- * @return {*}  {string}                hashed disclosure
- */
-export function hashDisclosure(disclosure: string, sd_alg: string = DEFAULT_SD_ALG): string {
-  if (sd_alg === DEFAULT_SD_ALG) {
-    const digest = sha256.create().update(stringToBytes(disclosure)).digest()
-    return bytesToBase64url(digest)
-  }
-  console.log('sd_alg', sd_alg)
-  throw new Error(`Unsupported sd_alg: ${sd_alg}`)
-}
 /**
  *
  *
  * @export
- * @param {Partial<JWTPayload>} payload
- * @param {Partial<JWTPayload>} redactedPayload
- * @param {JWTOptions} { issuer, signer, alg, expiresIn, canonicalize }
+ * @param {Partial<SdJWTPayload>} payload
+ * @param {SdJWTOptions} { issuer, signer, alg, expiresIn, canonicalize, disclosures, kb_jwt }
  * @param {Partial<JWTHeader>} [header={}]
  * @return {*}  {Promise<string>}
  */
 export async function createSdJWT(
-  payload: Partial<JWTPayload>,
-  redactedPayload: Partial<JWTPayload>,
-  { issuer, signer, alg, expiresIn, canonicalize }: JWTOptions,
+  payload: Partial<SdJWTPayload>,
+  { issuer, signer, alg, expiresIn, canonicalize, disclosures, kb_jwt }: SdJWTOptions,
   header: Partial<JWTHeader> = {}
 ): Promise<string> {
-  const { sdJwtPart, disclosures } = makeSelectivelyDisclosable(redactedPayload)
-  const mergedJwt = { ...payload, ...sdJwtPart }
-  const jwt = await createJWT(mergedJwt, { issuer, signer, alg, expiresIn, canonicalize }, header)
-
-  return formSdJwt(jwt, disclosures)
+  const jwt = await createJWT(payload, { issuer, signer, alg, expiresIn, canonicalize }, header)
+  return formSdJwt(jwt, disclosures, kb_jwt)
 }
 
-interface SdJwtData {
-  sdJwtPart: Partial<SdJWTPayload>
-  disclosures: string[]
-}
+/**
+ *  Decodes an SD-JWT and returns an object representing the payload
+ *
+ *  @example
+ *  decodeSdJWT('eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE1...~<Disclosure 1>~...<optional KB-JWT>')
+ *
+ * @export
+ * @param {string} sdJwt                an SD-JWT to verify
+ * @param {boolean} [recurse=true]      whether to recurse into the payload to decode any nested SD-JWTs
+ * @return {*}  {JWTDecoded}            the decoded SD-JWT
+ */
+export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecoded {
+  const parts = sdJwt.split('~')
 
-export function makeSelectivelyDisclosable(sdParts: Partial<JWTPayload>, sd_alg: string = DEFAULT_SD_ALG): SdJwtData {
-  const sdJwtPart: Partial<SdJWTPayload> = {
-    _sd_alg: sd_alg,
+  // Last element is either empty or a KB-JWT
+  const kbJwt = parts.pop() || ''
+
+  const [jwt, ...disclosures] = parts
+
+  const decodedJwt = decodeJWT(jwt, recurse)
+
+  const sdAlg = decodedJwt.payload._sd_alg || DEFAULT_SD_ALG
+  const disclosureMap = buildDigestDisclosureMap(disclosures, sdAlg)
+  const converted = expandDisclosures(decodedJwt.payload, disclosureMap, recurse) as JWTPayload
+
+  const decodedSdJwt: SdJWTDecoded = {
+    ...decodedJwt,
+    payload: {
+      _sd_alg: sdAlg,
+      ...converted,
+    },
   }
 
-  const sdArray: string[] = []
-  const disclosures: string[] = []
-  Object.entries(sdParts).forEach(([key, value]) => {
-    const disclosure = createObjectPropertyDisclosure(key, value)
-    const hash = hashDisclosure(disclosure, sd_alg)
-    disclosures
-    sdArray.push(hash)
+  if (kbJwt) {
+    decodedSdJwt.kb_jwt = kbJwt
+  }
+
+  return decodedSdJwt
+}
+
+/* Optional helper methpds for building SD-JWTs */
+
+/**
+ * Make a payload selectively disclosable, as described in 5.2. Selective Disclosure.
+ *
+ * Returns an object with the SD-JWT payload and an array of disclosures, which can be used
+ *
+ * @export
+ * @param {Partial<JWTPayload>} clearText the payload to be selectively disclosed, in clear text
+ * @param {string} [sd_alg=DEFAULT_SD_ALG]
+ * @return {*}  {SdSplit}   consisting of the SD-JWT payload and an array of disclosures
+ */
+
+export function makeSelectivelyDisclosable(
+  clearText: Partial<JWTPayload>,
+  sd_alg: string = DEFAULT_SD_ALG
+): Map<string, string> {
+  const disclosures = Object.entries(clearText).map(([key, value]) => {
+    return createObjectPropertyDisclosure(key, value)
   })
-  if (sdArray.length > 0) {
-    sdJwtPart._sd = sdArray
-  }
 
-  return {
-    sdJwtPart,
-    disclosures,
-  }
+  const disclosureMap = buildDigestDisclosureMap(disclosures, sd_alg)
+
+  return disclosureMap
 }
 
 /**
@@ -176,11 +148,122 @@ export function makeSelectivelyDisclosable(sdParts: Partial<JWTPayload>, sd_alg:
  * @return {*}  {string}
  */
 export function formSdJwt(jwt: string, encodedDisclosures: string[], kbJwt?: string): string {
-  return `${jwt}~${encodedDisclosures.join('~')}~${kbJwt ? kbJwt : ''}}`
-  //
+  return `${jwt}~${encodedDisclosures.join('~')}~${kbJwt ? kbJwt : ''}`
 }
 
-// verify methods
+/* Utilites for SD-JWT Creation */
+
+export function createSalt(length = MINIMUM_SALT_LENGTH): string {
+  return bytesToBase64url(randomBytes(length))
+}
+
+/**
+ * Create an object property disclosure as described in SD-JWT spec 5.2.1. Disclosures for Object Properties.
+ *
+ * Optionally pass in a salt, which is useful for testing against SD-JWT test vectors. Otherwise one will be generated.
+ *
+ * @export
+ * @param {string} key
+ * @param {JSONValue} value
+ * @param {CreateDisclosureOptions} [options]
+ * @return {*}  {string}        base64url-encoded disclosure
+ */
+export function createObjectPropertyDisclosure(
+  key: string,
+  value: JSONValue,
+  options?: CreateDisclosureOptions
+): string {
+  const salt = options?.salt || createSalt()
+  const specStringify = options?.specCompatStringify || false
+  const disclosure: ObjectPropertyDisclosure = { salt: salt, key: key, value: value }
+  return encodeDisclosure(disclosure, specStringify)
+}
+
+/**
+ * Create an array element disclosure as described in SD-JWT spec 5.2.2. Disclosures for Array Elements.
+ *
+ * Optionally pass in a salt, which is useful for testing against SD-JWT test vectors. Otherwise one will be generated.
+ *
+ * @export
+ * @param {JSONValue} arrayElement
+ * @param {CreateDisclosureOptions} [options]
+ * @return {*}  {string}        base64url-encoded disclosure
+ */
+export function createArrayElementDisclosure(arrayElement: JSONValue, options?: CreateDisclosureOptions): string {
+  const salt = options?.salt || createSalt()
+  const specStringify = options?.specCompatStringify || false
+  const disclosure: ArrayElementDisclosure = { salt: salt, value: arrayElement }
+  return encodeDisclosure(disclosure, specStringify)
+}
+
+/**
+ * Encode an SD-JWT spec 5.2.1. Disclosures for Object Properties. Optional specCompatStringify
+ * argument allows demonstration of compatibility with the SD-JWT spec examples.
+ *
+ * @param {Disclosure} disclosure
+ * @param {boolean} [specCompatStringify=false]
+ * @return {string}
+ */
+function encodeDisclosure(disclosure: Disclosure, specCompatStringify: boolean = false): string {
+  const disclosureAsArray = disclosureToArray(disclosure)
+  let stringified: string
+  if (specCompatStringify) {
+    stringified = doSpecStringify(disclosureAsArray)
+  } else {
+    stringified = JSON.stringify(disclosureAsArray)
+  }
+  const asBytes = stringToBytes(stringified)
+  return bytesToBase64url(asBytes)
+}
+
+/**
+ * Convert disclosure object to an array of strings and JSONValues
+ *
+ * @param {Disclosure} disclosure
+ * @return {*}  {JSONValue[]}
+ */
+function disclosureToArray(disclosure: Disclosure): JSONValue[] {
+  if (Object.prototype.hasOwnProperty.call(disclosure, 'key')) {
+    const objectPropertyDisclosure = disclosure as ObjectPropertyDisclosure
+    return [disclosure.salt, objectPropertyDisclosure.key, disclosure.value]
+  } else {
+    return [disclosure.salt, disclosure.value]
+  }
+}
+
+/**
+ * JSON.stringify workaround for arrays, in order to match SD-JWT spec.
+ *
+ * Stringify element-wise and join with commas, space-separated.
+ *
+ * @param {Disclosure} disclosure
+ * @return {*}  {string}
+ */
+function doSpecStringify(disclosure: JSONValue[]): string {
+  const elements = disclosure.map((element) => {
+    return JSON.stringify(element)
+  })
+
+  return `[${elements.join(', ')}]`
+}
+
+/**
+ * Hash a disclosure using the specified hash algorithm.
+ *
+ * @export
+ * @param {string} disclosure           base64url-encoded disclosure TODO: add regex to test
+ * @param {string} [sd_alg=DEFAULT_SD_ALG]     hash algorithm to use for disclosures
+ * @return {*}  {string}                hashed disclosure
+ */
+export function hashDisclosure(disclosure: string, sd_alg: string = DEFAULT_SD_ALG): string {
+  if (sd_alg === DEFAULT_SD_ALG) {
+    const digest = sha256.create().update(stringToBytes(disclosure)).digest()
+    return bytesToBase64url(digest)
+  }
+  throw new Error(`Unsupported sd_alg: ${sd_alg}`)
+}
+
+/* Utilities for SD-JWT decoding */
 
 /**
  * Compute disclosure digests so we can perform lookup from payload
@@ -194,37 +277,6 @@ function buildDigestDisclosureMap(disclosures: string[], sd_alg: string = DEFAUL
     return { disclosure, digest }
   })
   return new Map(disclosureHashEntries.map((obj) => [obj.digest, obj.disclosure]))
-}
-
-/**
- *  Decodes an SD-JWT and returns an object representing the payload
- *
- *  @example
- *  decodeSdJWT('eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE1...~<Disclosure 1>~...<optional KB-JWT>')
- *
- * @export
- * @param {string} sdJwt                an SD-JWT to verify
- * @param {boolean} [recurse=true]      whether to recurse into the payload to decode any nested SD-JWTs
- * @return {*}  {JWTDecoded}            the decoded JWT
- */
-export function decodeSdJWT(sdJwt: string, recurse: boolean = true): JWTDecoded {
-  const parts = sdJwt.split(DISCLOSURE_SEPARATOR)
-
-  // Last element is either empty or a KB-JWT
-  const kbJwt = parts.pop() || ''
-  console.log('kbJwt', kbJwt) // TODO: handle
-
-  const [jwt, ...disclosures] = parts
-
-  const decodedJwt = decodeJWT(jwt, recurse)
-  const sdAlg = decodedJwt.payload._sd_alg || DEFAULT_SD_ALG
-  const jwtPayload = decodedJwt.payload
-
-  const disclosureMap = buildDigestDisclosureMap(disclosures, sdAlg)
-
-  const converted = expandDisclosures(jwtPayload, disclosureMap, recurse) as JWTPayload
-  decodedJwt.payload = converted // TODO
-  return decodedJwt
 }
 
 /**
