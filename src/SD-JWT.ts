@@ -93,7 +93,7 @@ export async function createSdJWT(
  * - Claim names do not exist more than once (i.e. a disclosure does not overwrite a clear text claim)
  * - Digests are not found more than once (TODO)
  *
- * Per 6.1.6 and 7, it removes _sd and _sd_alg are removed from the payload
+ * Per 6.1.6 and 7, this removes _sd and _sd_alg are removed from the payload
  *
  *  @example
  *  decodeSdJWT('eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE1...~<Disclosure 1>~...<optional KB-JWT>')
@@ -104,7 +104,7 @@ export async function createSdJWT(
  * @return {*}  {JWTDecoded}            the decoded SD-JWT
  */
 export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecoded {
-  const { jwt, disclosures, kbJwt } = doSplitSdJwt(sdJwt)
+  const { jwt, disclosures, kbJwt } = splitSdJwt(sdJwt)
 
   const decodedJwt = decodeJWT(jwt, recurse)
 
@@ -156,7 +156,7 @@ export async function verifyJWT(
     didAuthenticator: undefined,
   }
 ): Promise<SdJWTVerified> {
-  const { jwt } = doSplitSdJwt(sdJwt)
+  const { jwt } = splitSdJwt(sdJwt)
   const verified = await verifyJWT(jwt, options)
   const decoded = decodeSdJWT(sdJwt, false)
   verified.payload = decoded.payload
@@ -319,12 +319,12 @@ export function hashDisclosure(disclosure: string, sd_alg: string = DEFAULT_SD_A
   throw new Error(`Unsupported sd_alg: ${sd_alg}`)
 }
 
-function splitSdJwt(sdJwt: string): string[] {
+function _splitSdJwt(sdJwt: string): string[] {
   return sdJwt.split('~')
 }
 
-function doSplitSdJwt(sdJwt: string): SplitSdJWT {
-  const parts = splitSdJwt(sdJwt)
+function splitSdJwt(sdJwt: string): SplitSdJWT {
+  const parts = _splitSdJwt(sdJwt)
   const kbJwt = parts.pop() || ''
   const [jwt, ...disclosures] = parts
   return { jwt, disclosures, kbJwt }

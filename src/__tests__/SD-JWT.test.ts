@@ -11,6 +11,7 @@ import {
 import { ES256KSigner } from '../signers/ES256KSigner.js'
 import { hexToBytes } from '../util.js'
 import {
+  ARRAY_ELEMENT_DISCLOSURE_TEST_CASES,
   EXAMPLE_1_DECODED,
   EXAMPLE_1_JWT,
   EXAMPLE_1_KB_DECODED,
@@ -20,8 +21,19 @@ import {
 } from './sd-jwt-vectors.js'
 
 describe('SD-JWT()', () => {
-  const BASE64_REGEX = new RegExp(/^[-A-Za-z0-9_/]*={0,3}$/)
+  const BASE64_URL_REGEX = new RegExp(/^[-A-Za-z0-9_/]*={0,3}$/)
 
+  /**
+   * If set to true, this uses a special stringify function that allows an
+   * exact match for the SD-JWT spec examples.
+   *
+   * Matching the spec outputs also requires the use of a pre-defined salt,
+   * which is provided in the test cases. (@link sd-jwt-vectors.js)
+   *
+   * Because the exact stringify formatting is not specified by the spec,
+   * this is not the default behavior. If not enabled, the default
+   * JSON.stringify() function, with no args, will be used.
+   */
   const SPEC_COMPAT_OPTIONS = {
     specCompatStringify: true,
   }
@@ -36,50 +48,52 @@ describe('SD-JWT()', () => {
   const publicKey = '03fdd57adec3d438ea237fe46b33ee1e016eda6b585c3e27ea66686c2ea5358479'
   const signer = ES256KSigner(hexToBytes(privateKey))
 
-  describe('createSalt', () => {
-    it('createSalt() returns a string that is base64url encoded', () => {
+  describe('createSalt()', () => {
+    it('returns a string that is base64url encoded', () => {
       const salt = createSalt()
-      expect(BASE64_REGEX.test(salt)).toBeTruthy()
+      expect(BASE64_URL_REGEX.test(salt)).toBeTruthy()
     })
 
-    it('createSalt(number) returns a string that is base64url encoded', () => {
+    it('returns a string that is base64url encoded (with pre-defined salt) ', () => {
       const salt = createSalt(32)
-      expect(BASE64_REGEX.test(salt)).toBeTruthy()
+      expect(BASE64_URL_REGEX.test(salt)).toBeTruthy()
     })
   })
-  describe('createObjectPropertyDisclosure', () => {
-    it('createObjectPropertyDisclosure returns a string that is base64url encoded', () => {
-      const key = 'key'
-      const value = 'value'
+
+  /* SD-JWT spec (5.2.1) tests  */
+  describe('createObjectPropertyDisclosure()', () => {
+    it('returns a string that is base64url encoded', () => {
+      const key = 'someKey'
+      const value = 'someValue'
       const disclosure = createObjectPropertyDisclosure(key, value)
 
-      expect(BASE64_REGEX.test(disclosure)).toBeTruthy()
+      expect(BASE64_URL_REGEX.test(disclosure)).toBeTruthy()
     })
 
-    it('createObjectPropertyDisclosure (with salt) returns a string that is base64url encoded', () => {
+    it('returns a string that is base64url encoded (given a pre-defined salt)', () => {
       const salt = createSalt()
-      const key = 'key'
-      const value = 'value'
+      const key = 'someKey'
+      const value = 'someValue'
       const disclosure = createObjectPropertyDisclosure(key, value, {
         salt,
       })
 
-      expect(BASE64_REGEX.test(disclosure)).toBeTruthy()
+      expect(BASE64_URL_REGEX.test(disclosure)).toBeTruthy()
     })
 
     it.each(OBJECT_PROPERTY_DISCLOSURE_TEST_CASES)(
-      'createObjectPropertyDisclosure matches SD-JWT spec output with stringify override (key: $key, value: $value, salt: $salt)',
-      ({ key, value, salt, disclosure }) => {
+      'matches SD-JWT spec output with specCompatStringify (key: $key, value: $value, salt: $salt)',
+      ({ key, value, salt, specDisclosure }) => {
         const actual = createObjectPropertyDisclosure(key, value, {
           salt,
           ...SPEC_COMPAT_OPTIONS,
         })
-        expect(actual).toEqual(disclosure)
+        expect(actual).toEqual(specDisclosure)
       }
     )
 
     it.each(OBJECT_PROPERTY_DISCLOSURE_TEST_CASES)(
-      'createObjectPropertyDisclosure matches expected output with default stringify (key: $key, value: $value, salt: $salt)',
+      'matches expected output with default JSON.stringify() (key: $key, value: $value, salt: $salt)',
       ({ key, value, salt, defaultDisclosure }) => {
         const actual = createObjectPropertyDisclosure(key, value, {
           salt,
@@ -89,26 +103,49 @@ describe('SD-JWT()', () => {
     )
   })
 
-  describe('createArrayElementDisclosure', () => {
-    it.each([
-      ['FR', 'lklxF5jMYlGTPUovMNIvCA', 'WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgIkZSIl0'],
-      ['US', 'lklxF5jMYlGTPUovMNIvCA', 'WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgIlVTIl0'],
-      ['DE', 'nPuoQnkRFq3BIeAm7AnXFA', 'WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgIkRFIl0'],
-    ])(
-      'createArrayElementDisclosure matches SD-JWT spec output (arrayElement: %s, salt: %s)',
-      (arrayElement, salt, expected) => {
-        const disclosure = createArrayElementDisclosure(arrayElement, {
+  /* SD-JWT spec (5.2.2) tests */
+  describe('createArrayElementDisclosure()', () => {
+    it('returns a string that is base64url encoded', () => {
+      const arrayElement = 'someValue'
+      const disclosure = createArrayElementDisclosure(arrayElement)
+
+      expect(BASE64_URL_REGEX.test(disclosure)).toBeTruthy()
+    })
+
+    it('returns a string that is base64url encoded (given a pre-defined salt) ', () => {
+      const salt = createSalt()
+      const arrayElement = 'someValue'
+      const disclosure = createArrayElementDisclosure(arrayElement)
+
+      expect(BASE64_URL_REGEX.test(disclosure)).toBeTruthy()
+    })
+
+    it.each(ARRAY_ELEMENT_DISCLOSURE_TEST_CASES)(
+      'matches SD-JWT spec output with specCompatStringify (arrayElement: $arrayElement, salt: $salt)',
+      ({ arrayElement, salt, specDisclosure }) => {
+        const actual = createArrayElementDisclosure(arrayElement, {
           salt,
           ...SPEC_COMPAT_OPTIONS,
         })
-        expect(disclosure).toEqual(expected)
+        expect(actual).toEqual(specDisclosure)
+      }
+    )
+
+    it.each(ARRAY_ELEMENT_DISCLOSURE_TEST_CASES)(
+      'matches expected output with default JSON.stringify() (arrayElement: $arrayElement, salt: $salt)',
+      ({ arrayElement, salt, defaultDisclosure }) => {
+        const actual = createArrayElementDisclosure(arrayElement, {
+          salt,
+        })
+        expect(actual).toEqual(defaultDisclosure)
       }
     )
   })
 
-  describe('hashDisclosure', () => {
+  /* SD-JWT spec (5.3) tests */
+  describe('hashDisclosure()', () => {
     it.each(HASH_DISCLOSURE_TEST_CASES)(
-      'hashDisclosure matches SD-JWT spec output (%s, %s)',
+      'matches SD-JWT spec output (disclosure: %s, expectedHash: %s)',
       (disclosure, expectedHash) => {
         const hash = hashDisclosure(disclosure)
         expect(hash).toEqual(expectedHash)
@@ -116,7 +153,7 @@ describe('SD-JWT()', () => {
     )
   })
 
-  describe('makeSelectivelyDisclosable', () => {
+  describe('makeSelectivelyDisclosable()', () => {
     it('passes basic test', () => {
       // TODO: ensure this is right
       const expected = {
@@ -152,17 +189,18 @@ describe('SD-JWT()', () => {
     })
   })
 
-  describe('parseObjectPropertyDisclosure ', () => {
+  /* Ensures disclosures roundtrip */
+  describe('parseObjectPropertyDisclosure() ', () => {
     it.each(OBJECT_PROPERTY_DISCLOSURE_TEST_CASES)(
-      'parseObjectPropertyDisclosure roundtrips (with disclosure created by spec stringify override) (key: $key, value: $value, salt: $salt)',
-      ({ disclosure, key, value, salt }) => {
-        const decoded = parseObjectPropertyDisclosure(disclosure)
+      'parses disclosures stringified with specCompatStringify (specDisclosure: $specDisclosure)',
+      ({ specDisclosure, key, value, salt }) => {
+        const decoded = parseObjectPropertyDisclosure(specDisclosure)
         expect(decoded).toMatchObject({ key, value, salt })
       }
     )
 
     it.each(OBJECT_PROPERTY_DISCLOSURE_TEST_CASES)(
-      'parseObjectPropertyDisclosure roundtrips (key: $key, value: $value, salt: $salt)',
+      'parses disclosures stringified with default JSON.stringify() (defaultDisclosure: $defaultDisclosure)',
       ({ defaultDisclosure, key, value, salt }) => {
         const decoded = parseObjectPropertyDisclosure(defaultDisclosure)
         expect(decoded).toMatchObject({ key, value, salt })
@@ -170,7 +208,7 @@ describe('SD-JWT()', () => {
     )
   })
 
-  describe('createSdJWT', () => {
+  describe('createSdJWT()', () => {
     it('creates an SD-JWT without key binding', async () => {
       const expected = {
         header: {
@@ -221,30 +259,39 @@ describe('SD-JWT()', () => {
 
       // verify result by decoding
       const decoded = decodeSdJWT(sdJwt, true)
-
-      console.log(JSON.stringify(decoded, null, 2))
-
       expect(decoded).toMatchObject(expected)
     })
   })
 
-  describe('decodeSdJWT', () => {
-    it('decodes an SD-JWT without key binding', () => {
+  describe('decodeSdJWT()', () => {
+    it('decodes SD-JWT spec example (without key binding)', () => {
       const decoded = decodeSdJWT(EXAMPLE_1_JWT, true)
       expect(decoded).toMatchObject(EXAMPLE_1_DECODED)
     })
 
-    it('decodes an SD-JWT with key binding', () => {
+    it('decodes SD-JWT spec example (with key binding)', () => {
       const decoded = decodeSdJWT(EXAMPLE_1_KB_JWT, true)
       expect(decoded).toMatchObject(EXAMPLE_1_KB_DECODED)
     })
   })
 
-  describe('verifySdJWT', () => {
-    /* TODO */
+  describe('verifySdJWT()', () => {
+    it('ignores undisclosed digests', () => {})
+
+    it('rejects an ill-formed SD-JWT', () => {})
+
+    it('rejects an SD-JWT with an invalid signature', () => {})
+
+    it('rejects an SD-JWT with unsupported sd_alg', () => {})
+
+    it('rejects an SD-JWT with an ill-formed array disclosure', () => {})
+    it('rejects an SD-JWT with an ill-formed object disclosure', () => {})
+
+    it('rejects an SD-JWT with a repeated claim', () => {})
+
+    it('rejects an SD-JWT with digests found more than once', () => {})
   })
 
-  // TODO: need to ensure we cover all the holder verifies cases from spec, etc
   describe('E2E - Holder', () => {
     it('reveals a subset of disclosures', () => {
       // Step 0: holder receives EXAMPLE_1_JWT from issuer
@@ -254,11 +301,7 @@ describe('SD-JWT()', () => {
     })
   })
 
-  describe('E2E - Holder', () => {
-    /* TODO */
-  })
+  describe('E2E - Verifier', () => {})
 
-  describe('E2E - decoy', () => {
-    /* TODO */
-  })
+  describe('E2E - Decoy', () => {})
 })
