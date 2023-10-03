@@ -240,5 +240,25 @@ describe('SD-JWT()', () => {
     })
   })
 
-  describe('verifySdJWT', () => {})
+  describe('verifySdJWT', () => {
+    /* TODO */
+  })
+
+  // TODO: need to ensure we cover all the holder verifies cases from spec, etc
+  describe('E2E - Holder', () => {
+    it('reveals a subset of disclosures', () => {
+      // Step 0: holder receives EXAMPLE_1_JWT from issuer
+
+      const decoded = decodeSdJWT(EXAMPLE_1_JWT, true)
+      expect(decoded).toMatchObject(EXAMPLE_1_DECODED)
+    })
+  })
+
+  describe('E2E - Holder', () => {
+    /* TODO */
+  })
+
+  describe('E2E - decoy', () => {
+    /* TODO */
+  })
 })

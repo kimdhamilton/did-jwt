@@ -1,7 +1,16 @@
 import { randomBytes } from '@noble/hashes/utils'
 import { bytesToBase64url, decodeBase64url, stringToBytes } from './util.js'
 import { sha256 } from '@noble/hashes/sha256'
-import { JWTDecoded, JWTHeader, JWTOptions, JWTPayload, createJWT, decodeJWT } from './JWT.js'
+import {
+  JWTDecoded,
+  JWTHeader,
+  JWTOptions,
+  JWTPayload,
+  JWTVerified,
+  JWTVerifyOptions,
+  createJWT,
+  decodeJWT,
+} from './JWT.js'
 
 const MINIMUM_SALT_LENGTH = 16
 const DEFAULT_SD_ALG = 'sha-256'
@@ -16,8 +25,18 @@ export interface SdJWTOptions extends JWTOptions {
 }
 
 export interface SdJWTDecoded extends JWTDecoded {
-  payload: SdJWTPayload
+  payload: JWTPayload
   kb_jwt?: string
+}
+
+export interface SdJWTVerified extends JWTVerified {
+  payload: Partial<SdJWTPayload>
+}
+
+interface SplitSdJWT {
+  jwt: string
+  disclosures: string[]
+  kbJwt?: string
 }
 
 export interface CreateDisclosureOptions {
@@ -44,11 +63,6 @@ interface ObjectPropertyDisclosure extends Disclosure {
   key: string
 }
 
-/*
-interface SdJWTVerified extends JWTVerified {
-  payload: Partial<SdJWTPayload>
-}*/
-
 /**
  *
  *
@@ -70,6 +84,17 @@ export async function createSdJWT(
 /**
  *  Decodes an SD-JWT and returns an object representing the payload
  *
+ * This performs the following checks required by 6.1.2-7:
+ * - Ensure  nbf, iat, and exp clains, if present, are not selectively disclosed
+ * - Ensure the _sd_alg header parameter is supported
+ * - Ensure the disclosures are well-formed:
+ *     - Object property disclosures are arrays of length 3
+ *     - Array disclosures are arrays of length 2
+ * - Claim names do not exist more than once (i.e. a disclosure does not overwrite a clear text claim)
+ * - Digests are not found more than once (TODO)
+ *
+ * Per 6.1.6 and 7, it removes _sd and _sd_alg are removed from the payload
+ *
  *  @example
  *  decodeSdJWT('eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE1...~<Disclosure 1>~...<optional KB-JWT>')
  *
@@ -79,12 +104,7 @@ export async function createSdJWT(
  * @return {*}  {JWTDecoded}            the decoded SD-JWT
  */
 export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecoded {
-  const parts = sdJwt.split('~')
-
-  // Last element is either empty or a KB-JWT
-  const kbJwt = parts.pop() || ''
-
-  const [jwt, ...disclosures] = parts
+  const { jwt, disclosures, kbJwt } = doSplitSdJwt(sdJwt)
 
   const decodedJwt = decodeJWT(jwt, recurse)
 
@@ -95,7 +115,6 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
   const decodedSdJwt: SdJWTDecoded = {
     ...decodedJwt,
     payload: {
-      _sd_alg: sdAlg,
       ...converted,
     },
   }
@@ -105,6 +124,43 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
   }
 
   return decodedSdJwt
+}
+/**
+ *
+ * Verify an SD-JWT and return the payload, performing SD-JWT-specific checks via decodeSdJWT
+ *
+ * @export
+ * @param {string} sdJwt
+ * @param {JWTVerifyOptions} [options={
+ *     resolver: undefined,
+ *     auth: undefined,
+ *     audience: undefined,
+ *     callbackUrl: undefined,
+ *     skewTime: undefined,
+ *     proofPurpose: undefined,
+ *     policies: {},
+ *     didAuthenticator: undefined,
+ *   }]
+ * @return {*}  {Promise<JWTVerified>}
+ */
+export async function verifyJWT(
+  sdJwt: string,
+  options: JWTVerifyOptions = {
+    resolver: undefined,
+    auth: undefined,
+    audience: undefined,
+    callbackUrl: undefined,
+    skewTime: undefined,
+    proofPurpose: undefined,
+    policies: {},
+    didAuthenticator: undefined,
+  }
+): Promise<SdJWTVerified> {
+  const { jwt } = doSplitSdJwt(sdJwt)
+  const verified = await verifyJWT(jwt, options)
+  const decoded = decodeSdJWT(sdJwt, false)
+  verified.payload = decoded.payload
+  return verified
 }
 
 /* Optional helper methpds for building SD-JWTs */
@@ -263,6 +319,17 @@ export function hashDisclosure(disclosure: string, sd_alg: string = DEFAULT_SD_A
   throw new Error(`Unsupported sd_alg: ${sd_alg}`)
 }
 
+function splitSdJwt(sdJwt: string): string[] {
+  return sdJwt.split('~')
+}
+
+function doSplitSdJwt(sdJwt: string): SplitSdJWT {
+  const parts = splitSdJwt(sdJwt)
+  const kbJwt = parts.pop() || ''
+  const [jwt, ...disclosures] = parts
+  return { jwt, disclosures, kbJwt }
+}
+
 /* Utilities for SD-JWT decoding */
 
 /**
@@ -347,6 +414,9 @@ export function expandDisclosures(
         .map((digest: string) => {
           const disclosure = disclosureMap.get(digest) as string
           const parsed = parseObjectPropertyDisclosure(disclosure)
+          if (!isValidDisclosureKey(parsed.key)) {
+            throw new Error(`Invalid disclosure key: ${parsed.key}`)
+          }
           return parsed
         })
       asObjectDisclosures.forEach((d) => {
@@ -376,6 +446,10 @@ export function expandDisclosures(
     }
   }
   return wip
+}
+
+function isValidDisclosureKey(key: string): boolean {
+  return !(key in ['nbf', 'iat', 'exp'])
 }
 
 export function parseArrayElementDisclosure(encodedDisclosure: string): ArrayElementDisclosure {
