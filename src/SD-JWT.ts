@@ -10,6 +10,7 @@ import {
   JWTVerifyOptions,
   createJWT,
   decodeJWT,
+  verifyJWT,
 } from './JWT.js'
 
 const MINIMUM_SALT_LENGTH = 16
@@ -19,9 +20,17 @@ export interface SdJWTPayload extends JWTPayload {
   _sd_alg: string
   _sd?: string[]
 }
+// TODO: options or main object?
 export interface SdJWTOptions extends JWTOptions {
   disclosures: string[]
   kb_jwt?: string
+}
+
+// TODO: here and other places: rename to digestDisclosureMap
+
+export interface SDJWTHelper {
+  payload: Partial<SdJWTPayload>
+  dislosureMap: Map<string, string>
 }
 
 export interface SdJWTDecoded extends JWTDecoded {
@@ -79,6 +88,7 @@ export async function createSdJWT(
 ): Promise<string> {
   const jwt = await createJWT(payload, { issuer, signer, alg, expiresIn, canonicalize }, header)
   return formSdJwt(jwt, disclosures, kb_jwt)
+  return jwt
 }
 
 /**
@@ -93,7 +103,9 @@ export async function createSdJWT(
  * - Claim names do not exist more than once (i.e. a disclosure does not overwrite a clear text claim)
  * - Digests are not found more than once (TODO)
  *
- * Per 6.1.6 and 7, this removes _sd and _sd_alg are removed from the payload
+ * Per 6.1.6 and 7, this ensures _sd and _sd_alg are removed from the payload. Because _sd may appear
+ * these are removed in the (optionally) recursive expandDisclosures method (to avoid duplicate
+ * recursive processing).
  *
  *  @example
  *  decodeSdJWT('eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE1...~<Disclosure 1>~...<optional KB-JWT>')
@@ -111,6 +123,7 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
   const sdAlg = decodedJwt.payload._sd_alg || DEFAULT_SD_ALG
   const disclosureMap = buildDigestDisclosureMap(disclosures, sdAlg)
   const converted = expandDisclosures(decodedJwt.payload, disclosureMap, recurse) as JWTPayload
+  delete converted['_sd_alg']
 
   const decodedSdJwt: SdJWTDecoded = {
     ...decodedJwt,
@@ -143,7 +156,7 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
  *   }]
  * @return {*}  {Promise<JWTVerified>}
  */
-export async function verifyJWT(
+export async function verifySdJWT(
   sdJwt: string,
   options: JWTVerifyOptions = {
     resolver: undefined,
@@ -166,9 +179,11 @@ export async function verifyJWT(
 /* Optional helper methpds for building SD-JWTs */
 
 /**
+ *
+ * TODO: consider making payload
  * Make a payload selectively disclosable, as described in 5.2. Selective Disclosure.
  *
- * Returns an object with the SD-JWT payload and an array of disclosures, which can be used
+ * Returns an object with the SD-JWT _sd entries and a map of digests to disclosures.
  *
  * @export
  * @param {Partial<JWTPayload>} clearText the payload to be selectively disclosed, in clear text
@@ -177,17 +192,100 @@ export async function verifyJWT(
  */
 
 export function makeSelectivelyDisclosable(
-  clearText: Partial<JWTPayload>,
+  sdClaims: Partial<JWTPayload>,
   sd_alg: string = DEFAULT_SD_ALG
 ): Map<string, string> {
-  const disclosures = Object.entries(clearText).map(([key, value]) => {
-    return createObjectPropertyDisclosure(key, value)
+  const disclosureArray = [] as string[]
+  Object.entries(sdClaims).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      /*
+      const arrayElements = value as JSONValue[]
+      const disclosures = arrayElements.map((arg) => {
+        return createArrayElementDisclosure(arg)
+      })
+      sdArray.push(...disclosures)
+      const _array = disclosures.map((d) => {
+        return { '...': hashDisclosure(d, sd_alg) }
+      })
+      */
+      throw new Error('TODO')
+    } else {
+      const disclosure = createObjectPropertyDisclosure(key, value)
+      //const digest = hashDisclosure(disclosure, sd_alg)
+      disclosureArray.push(disclosure)
+    }
+  })
+
+  return buildDigestDisclosureMap(disclosureArray, sd_alg)
+}
+
+export function makeSdJWTPayload(
+  clearClaims: Partial<JWTPayload>,
+  sdClaims: Partial<JWTPayload>,
+  sd_alg: string = DEFAULT_SD_ALG
+): Partial<SdJWTPayload> {
+  const disclosureMap = makeSelectivelyDisclosable(sdClaims, sd_alg)
+
+  const sdJwtInput = {
+    _sd_alg: sd_alg,
+    _sd: [...disclosureMap.keys()],
+    ...clearClaims,
+  }
+  //  TODO: need to return disclosures too
+
+  return sdJwtInput
+}
+
+/*
+class SdJwtPayloadBuilder {
+  private readonly sdClaims: Partial<JWTPayload>
+  private readonly sd_alg: string
+
+  constructor(sdClaims: Partial<JWTPayload>, sd_alg: string = DEFAULT_SD_ALG) {
+    this.sdClaims = sdClaims
+    this.sd_alg = sd_alg
+  }
+
+  public addClaim(key: string, value: JSONValue): SdJwtPayloadBuilder {
+    this.sdClaims[key] = value
+    return this
+  }
+
+  public withSdClaim() {
+    return this
+
+  }
+
+  public withClaim() {
+
+  }
+
+  public build(): Partial<SdJWTPayload> {
+    const disclosureMap = makeSelectivelyDisclosable(this.sdClaims, this.sd_alg)
+
+    const sdJwtInput = {
+      _sd_alg: this.sd_alg,
+      _sd: [...disclosureMap.keys()],
+      ...this.sdClaims,
+    }
+    return sdJwtInput
+  }
+}*/
+/*
+export function makeSdArrayElement(arrayElements: JSONValue[], sd_alg: string = DEFAULT_SD_ALG): any {
+  const disclosures = arrayElements.map((arg) => {
+    return createArrayElementDisclosure(arg)
   })
 
   const disclosureMap = buildDigestDisclosureMap(disclosures, sd_alg)
+  const result = Object.entries(disclosureMap).map(([digest, disclosure]) => {
+    return createObjectPropertyDisclosure(key, value)
+  })
 
-  return disclosureMap
-}
+// toDO
+  const obj = {'...': encoded}
+
+}*/
 
 /**
  *  Creates the serialized SD-JWT with disclosures, which looks like the following:
@@ -403,6 +501,7 @@ export function expandDisclosures(
 ): object {
   // clone the input
   const wip = JSON.parse(JSON.stringify(jwtPayload))
+  // TODO: can stop when you’ve seen all disclosures. Note use counting for dupes in this too
 
   const entries = Object.entries(jwtPayload)
 

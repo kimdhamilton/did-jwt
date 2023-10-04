@@ -1,3 +1,5 @@
+import { jest, describe, expect, it } from '@jest/globals'
+import { Resolvable } from 'did-resolver'
 import {
   createArrayElementDisclosure,
   createObjectPropertyDisclosure,
@@ -7,18 +9,30 @@ import {
   hashDisclosure,
   parseObjectPropertyDisclosure,
   createSdJWT,
+  verifySdJWT,
 } from '../SD-JWT.js'
 import { ES256KSigner } from '../signers/ES256KSigner.js'
 import { hexToBytes } from '../util.js'
 import {
   ARRAY_ELEMENT_DISCLOSURE_TEST_CASES,
+  ADDRESS_OPTION_1,
   EXAMPLE_1_DECODED,
   EXAMPLE_1_JWT,
   EXAMPLE_1_KB_DECODED,
   EXAMPLE_1_KB_JWT,
   HASH_DISCLOSURE_TEST_CASES,
   OBJECT_PROPERTY_DISCLOSURE_TEST_CASES,
+  ADDRESS_OPTION_1_DISCLOSURE,
+  ADDRESS_OPTION_1_SD_JWT,
+  ADDRESS_DECODED,
+  ADDRESS_OPTION_2,
+  ADDRESS_OPTION_3,
+  ADDRESS_OPTION_2_DISCLOSURES,
+  ADDRESS_OPTION_3_DISCLOSURES,
+  ADDRESS_OPTION_2_SD_JWT,
+  ADDRESS_OPTION_3_SD_JWT,
 } from './sd-jwt-vectors.js'
+import { createJWT, decodeJWT, verifyJWT } from '../JWT.js'
 
 describe('SD-JWT()', () => {
   const BASE64_URL_REGEX = new RegExp(/^[-A-Za-z0-9_/]*={0,3}$/)
@@ -38,11 +52,8 @@ describe('SD-JWT()', () => {
     specCompatStringify: true,
   }
 
-  const audAddress = '0x20c769ec9c0996ba7737a4826c2aaff00b1b2040'
-  const aud = `did:ethr:${audAddress}`
   const address = '0xf3beac30c498d9e26865f34fcaa57dbb935b0d74'
   const did = `did:ethr:${address}`
-  const alg = 'ES256K'
 
   const privateKey = '278a5de700e29faae8e40e366ec5012b5ec63d36ec77e8a2417154cc1d25383f'
   const publicKey = '03fdd57adec3d438ea237fe46b33ee1e016eda6b585c3e27ea66686c2ea5358479'
@@ -209,14 +220,66 @@ describe('SD-JWT()', () => {
   })
 
   describe('createSdJWT()', () => {
-    it('creates an SD-JWT without key binding', async () => {
+    const didDoc = {
+      didDocument: {
+        '@context': 'https://w3id.org/did/v1',
+        id: did,
+        verificationMethod: [
+          {
+            id: `${did}#keys-1`,
+            type: 'JsonWebKey2020',
+            controller: did,
+            publicKeyHex: publicKey,
+          },
+        ],
+        authentication: [`${did}#keys-1`],
+        assertionMethod: [`${did}#keys-1`],
+        capabilityInvocation: [`${did}#keys-1`],
+        capabilityDelegation: [`${did}#some-key-that-does-not-exist`],
+      },
+    }
+
+    /*
+      const didDoc = {
+    didDocument: {
+      '@context': 'https://w3id.org/did/v1',
+      id: did,
+
+      authentication: [`${did}#keys-1`],
+      assertionMethod: [`${did}#keys-1`],
+      capabilityInvocation: [`${did}#keys-1`],
+      capabilityDelegation: [`${did}#some-key-that-does-not-exist`],
+    },
+  }
+    */
+
+    const resolver = {
+      resolve: jest.fn(async (didUrl: string) => {
+        if (didUrl.includes(did)) {
+          return {
+            didDocument: didDoc.didDocument,
+            didDocumentMetadata: {},
+            didResolutionMetadata: { contentType: 'application/did+ld+json' },
+          }
+        }
+
+        return {
+          didDocument: null,
+          didDocumentMetadata: {},
+          didResolutionMetadata: {
+            error: 'notFound',
+            message: 'resolver_error: DID document not found',
+          },
+        }
+      }),
+    } as Resolvable
+    it('creates an SD-JWT (without key binding)', async () => {
       const expected = {
         header: {
-          alg: 'ES256',
+          alg: 'ES256K',
           typ: 'JWT',
         },
         payload: {
-          _sd_alg: 'sha-256',
           given_name: 'John',
           family_name: 'Doe',
           email: 'johndoe@example.com',
@@ -247,19 +310,50 @@ describe('SD-JWT()', () => {
         ...clearClaims,
       }
 
-      const sdJwt = await createSdJWT(
-        sdJwtInput,
-        {
-          issuer: did,
-          signer,
-          disclosures: [...disclosureMap.values()],
-        },
-        { alg: 'ES256' }
-      )
+      const sdJwt = await createSdJWT(sdJwtInput, {
+        issuer: did,
+        signer,
+        disclosures: [...disclosureMap.values()],
+      })
 
       // verify result by decoding
       const decoded = decodeSdJWT(sdJwt, true)
       expect(decoded).toMatchObject(expected)
+      const result = await verifySdJWT(sdJwt, { resolver })
+      expect(result.verified).toBeTruthy()
+    })
+
+    it('creates SD-JWT spec address example (OPTION 1: Flat SD-JWT)', async () => {
+      const sdJwt = await createSdJWT(ADDRESS_OPTION_1, {
+        issuer: did,
+        signer,
+        disclosures: [ADDRESS_OPTION_1_DISCLOSURE],
+      })
+
+      const result = await verifySdJWT(sdJwt, { resolver })
+      expect(result.verified).toBeTruthy()
+    })
+
+    it('creates SD-JWT spec address example (OPTION 2: Structured SD-JWT)', async () => {
+      const sdJwt = await createSdJWT(ADDRESS_OPTION_2, {
+        issuer: did,
+        signer,
+        disclosures: ADDRESS_OPTION_2_DISCLOSURES,
+      })
+
+      const result = await verifySdJWT(sdJwt, { resolver })
+      expect(result.verified).toBeTruthy()
+    })
+
+    it('creates SD-JWT spec address example (OPTION 3: Recursive Disclosures)', async () => {
+      const sdJwt = await createSdJWT(ADDRESS_OPTION_3, {
+        issuer: did,
+        signer,
+        disclosures: ADDRESS_OPTION_3_DISCLOSURES,
+      })
+
+      const result = await verifySdJWT(sdJwt, { resolver })
+      expect(result.verified).toBeTruthy()
     })
   })
 
@@ -272,6 +366,21 @@ describe('SD-JWT()', () => {
     it('decodes SD-JWT spec example (with key binding)', () => {
       const decoded = decodeSdJWT(EXAMPLE_1_KB_JWT, true)
       expect(decoded).toMatchObject(EXAMPLE_1_KB_DECODED)
+    })
+
+    it('decodes SD-JWT spec address example (OPTION 1: Flat SD-JWT)', () => {
+      const decoded = decodeSdJWT(ADDRESS_OPTION_1_SD_JWT, false)
+      expect(decoded).toMatchObject(ADDRESS_DECODED)
+    })
+
+    it('decodes SD-JWT spec address example (OPTION 2: Structured SD-JWT)', () => {
+      const decoded = decodeSdJWT(ADDRESS_OPTION_2_SD_JWT, true)
+      expect(decoded).toMatchObject(ADDRESS_DECODED)
+    })
+
+    it('decodes SD-JWT spec address example (OPTION 3: Recursive Disclosures)', () => {
+      const decoded = decodeSdJWT(ADDRESS_OPTION_3_SD_JWT, true)
+      expect(decoded).toMatchObject(ADDRESS_DECODED)
     })
   })
 
@@ -304,4 +413,7 @@ describe('SD-JWT()', () => {
   describe('E2E - Verifier', () => {})
 
   describe('E2E - Decoy', () => {})
+
+  describe('expandDisclosures', () => {})
+  describe('expandArrayElements', () => {})
 })
