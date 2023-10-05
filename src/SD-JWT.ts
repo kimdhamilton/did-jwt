@@ -20,21 +20,20 @@ export interface SdJWTPayload extends JWTPayload {
   _sd_alg: string
   _sd?: string[]
 }
-// TODO: options or main object?
+
 export interface SdJWTOptions extends JWTOptions {
   disclosures: string[]
   kb_jwt?: string
 }
 
-// TODO: here and other places: rename to digestDisclosureMap
-
 export interface SDJWTHelper {
-  payload: Partial<SdJWTPayload>
-  dislosureMap: Map<string, string>
+  sdJwtPayload: Partial<SdJWTPayload>
+  digestDislosureMap: Map<string, string>
 }
 
 export interface SdJWTDecoded extends JWTDecoded {
   payload: JWTPayload
+  disclosures: string[]
   kb_jwt?: string
 }
 
@@ -130,6 +129,7 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
     payload: {
       ...converted,
     },
+    disclosures: disclosures,
   }
 
   if (kbJwt) {
@@ -176,64 +176,69 @@ export async function verifySdJWT(
   return verified
 }
 
-/* Optional helper methpds for building SD-JWTs */
+/* Optional helper function for building SD-JWTs */
 
 /**
- *
- * TODO: consider making payload
- * Make a payload selectively disclosable, as described in 5.2. Selective Disclosure.
- *
- * Returns an object with the SD-JWT _sd entries and a map of digests to disclosures.
+ * Utility that demonstrates how issuers can construct an SD-JWT payload. This makes
+ * a lot of shortcuts and assumptions and doesn't support arbitrary nesting of
+ * SD objects out of the box. Such payloads can be constructed with other functions
+ * like createObjectPropertyDisclosure and createArrayElementDisclosure.
  *
  * @export
- * @param {Partial<JWTPayload>} clearText the payload to be selectively disclosed, in clear text
+ * @param {Partial<JWTPayload>} clearClaims
+ * @param {Partial<JWTPayload>} sdClaims
  * @param {string} [sd_alg=DEFAULT_SD_ALG]
- * @return {*}  {SdSplit}   consisting of the SD-JWT payload and an array of disclosures
+ * @return {*}  {Partial<SDJWTHelper>}
  */
-
-export function makeSelectivelyDisclosable(
-  sdClaims: Partial<JWTPayload>,
+export function sdJwtPayloadHelper(
+  sdClaims: Partial<SdJWTPayload>,
+  clearClaims: Partial<JWTPayload>,
   sd_alg: string = DEFAULT_SD_ALG
-): Map<string, string> {
-  const disclosureArray = [] as string[]
+): SDJWTHelper {
+  // this will store the SD object property disclosures
+  const sdArray = [] as string[]
+
+  // We'll assume that if an sdClaim value is array, then all the elements should be SD.
+  // These get stored back on the object as an array of digests
+  const sdArrayElementWrapper = {} as Partial<JWTPayload>
+
+  // This allows us to look up the disclosure from the digest
+  const digestDislosureMap = new Map<string, string>()
+
   Object.entries(sdClaims).forEach(([key, value]) => {
     if (Array.isArray(value)) {
-      /*
       const arrayElements = value as JSONValue[]
       const disclosures = arrayElements.map((arg) => {
         return createArrayElementDisclosure(arg)
       })
-      sdArray.push(...disclosures)
       const _array = disclosures.map((d) => {
-        return { '...': hashDisclosure(d, sd_alg) }
+        const digest = hashDisclosure(d, sd_alg)
+        digestDislosureMap.set(digest, d)
+        return { '...': digest }
       })
-      */
-      throw new Error('TODO')
+      sdArrayElementWrapper[key] = _array
     } else {
       const disclosure = createObjectPropertyDisclosure(key, value)
-      //const digest = hashDisclosure(disclosure, sd_alg)
-      disclosureArray.push(disclosure)
+      const digest = hashDisclosure(disclosure, sd_alg)
+      digestDislosureMap.set(digest, disclosure)
+      sdArray.push(digest)
     }
   })
 
-  return buildDigestDisclosureMap(disclosureArray, sd_alg)
-}
-
-export function makeSdJWTPayload(
-  clearClaims: Partial<JWTPayload>,
-  sdClaims: Partial<JWTPayload>,
-  sd_alg: string = DEFAULT_SD_ALG
-): Partial<SdJWTPayload> {
-  const disclosureMap = makeSelectivelyDisclosable(sdClaims, sd_alg)
-
+  // TODO: handle the case that _sd was already populated
   const sdJwtInput = {
     _sd_alg: sd_alg,
-    _sd: [...disclosureMap.keys()],
+    _sd: sdArray,
     ...clearClaims,
+    ...sdArrayElementWrapper,
   }
-  //  TODO: need to return disclosures too
 
-  return sdJwtInput
+  const result = {
+    sdJwtPayload: sdJwtInput,
+    digestDislosureMap: digestDislosureMap,
+  }
+
+  return result
 }
 
 /*

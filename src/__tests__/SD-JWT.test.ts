@@ -4,12 +4,13 @@ import {
   createArrayElementDisclosure,
   createObjectPropertyDisclosure,
   createSalt,
-  makeSelectivelyDisclosable,
   decodeSdJWT,
   hashDisclosure,
   parseObjectPropertyDisclosure,
   createSdJWT,
   verifySdJWT,
+  formSdJwt,
+  sdJwtPayloadHelper,
 } from '../SD-JWT.js'
 import { ES256KSigner } from '../signers/ES256KSigner.js'
 import { hexToBytes } from '../util.js'
@@ -31,8 +32,9 @@ import {
   ADDRESS_OPTION_3_DISCLOSURES,
   ADDRESS_OPTION_2_SD_JWT,
   ADDRESS_OPTION_3_SD_JWT,
+  ADDRESS_OPTION_2_JWT_ONLY,
+  ADDRESS_SUBSET_DECODED,
 } from './sd-jwt-vectors.js'
-import { createJWT, decodeJWT, verifyJWT } from '../JWT.js'
 
 describe('SD-JWT()', () => {
   const BASE64_URL_REGEX = new RegExp(/^[-A-Za-z0-9_/]*={0,3}$/)
@@ -164,21 +166,24 @@ describe('SD-JWT()', () => {
     )
   })
 
-  describe('makeSelectivelyDisclosable()', () => {
+  describe('makeSdJWTPayload()', () => {
     it('passes basic test', () => {
-      // TODO: ensure this is right
-      const expected = {
-        _sd: ['1d8R5b38fnDx0YuWnSNtr0mbNrnh5cjwsDm0OfCMqRc', 'nSu9QF-F0nagTViHF1_ifEivC1v-eDn4wRXOtzrj-hE'],
-        _sd_alg: 'sha-256',
-      }
-      const disclosureMap = makeSelectivelyDisclosable({ key1: 'value1', key2: 'value2' })
+      const { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(
+        { hiddenValue1: 'value1', hiddenValue2: 'value2' },
+        { clearValue1: 'value3' }
+      )
 
-      expect(disclosureMap).toBeDefined()
-      // TODO
+      expect(sdJwtPayload!._sd!.length).toEqual(2)
+      expect(sdJwtPayload!.clearValue1).toEqual('value3')
+
+      expect(digestDislosureMap.size).toEqual(2)
+      expect(digestDislosureMap.has(sdJwtPayload!._sd![0])).toBeTruthy()
+      expect(digestDislosureMap.has(sdJwtPayload!._sd![1])).toBeTruthy()
     })
 
-    // TODO: this won't match because salts are different
-    it('matches SD-JWT', () => {
+    it('roundtrips', () => {
+      // this test has high expectations; let's not let it down
+      expect.assertions(10)
       const input = {
         given_name: 'John',
         family_name: 'Doe',
@@ -187,16 +192,28 @@ describe('SD-JWT()', () => {
         phone_number_verified: true,
         birthdate: '1940-01-01',
         updated_at: 1570000000,
-        /*             address: {
-                          "street_address": "123 Main St",
-                          "locality": "Anytown",
-                          "region": "Anystate",
-                          "country": "US"
-                      },*/
+        address: {
+          street_address: '123 Main St',
+          locality: 'Anytown',
+          region: 'Anystate',
+          country: 'US',
+        },
       }
 
-      const sds = makeSelectivelyDisclosable(input)
-      //  console.log(JSON.stringify(sds, null, 2))
+      const { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(input, {})
+
+      expect(sdJwtPayload!._sd!.length).toEqual(8)
+
+      let decoded = {}
+
+      sdJwtPayload!._sd!.forEach((sd) => {
+        expect(digestDislosureMap.has(sd)).toBeTruthy()
+        const disclosure = digestDislosureMap.get(sd)
+        const parsed = parseObjectPropertyDisclosure(disclosure!)
+        decoded = { ...decoded, [parsed.key]: parsed.value }
+      })
+
+      expect(decoded).toMatchObject(input)
     })
   })
 
@@ -239,20 +256,6 @@ describe('SD-JWT()', () => {
       },
     }
 
-    /*
-      const didDoc = {
-    didDocument: {
-      '@context': 'https://w3id.org/did/v1',
-      id: did,
-
-      authentication: [`${did}#keys-1`],
-      assertionMethod: [`${did}#keys-1`],
-      capabilityInvocation: [`${did}#keys-1`],
-      capabilityDelegation: [`${did}#some-key-that-does-not-exist`],
-    },
-  }
-    */
-
     const resolver = {
       resolve: jest.fn(async (didUrl: string) => {
         if (didUrl.includes(did)) {
@@ -289,31 +292,25 @@ describe('SD-JWT()', () => {
         },
       }
 
-      const clearClaims = {
-        given_name: 'John',
-        family_name: 'Doe',
-        updated_at: 1570000000,
-      }
+      const { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(
+        {
+          email: 'johndoe@example.com',
+          phone_number: '+1-202-555-0101',
+          phone_number_verified: true,
+          birthdate: '1940-01-01',
+        },
+        {
+          given_name: 'John',
+          family_name: 'Doe',
+          updated_at: 1570000000,
+        },
+        'sha-256'
+      )
 
-      const sdClaims = {
-        email: 'johndoe@example.com',
-        phone_number: '+1-202-555-0101',
-        phone_number_verified: true,
-        birthdate: '1940-01-01',
-      }
-
-      const disclosureMap = makeSelectivelyDisclosable(sdClaims)
-
-      const sdJwtInput = {
-        _sd_alg: 'sha-256',
-        _sd: [...disclosureMap.keys()],
-        ...clearClaims,
-      }
-
-      const sdJwt = await createSdJWT(sdJwtInput, {
+      const sdJwt = await createSdJWT(sdJwtPayload, {
         issuer: did,
         signer,
-        disclosures: [...disclosureMap.values()],
+        disclosures: [...digestDislosureMap.values()],
       })
 
       // verify result by decoding
@@ -382,11 +379,17 @@ describe('SD-JWT()', () => {
       const decoded = decodeSdJWT(ADDRESS_OPTION_3_SD_JWT, true)
       expect(decoded).toMatchObject(ADDRESS_DECODED)
     })
+
+    /* Disclose only 1 of the 4 disclosures (street address) on example ADDRESS_OPTION_2.
+    This test simulates a holder revealing only a subset of disclosures. */
+    it('ignores undisclosed digests', () => {
+      const sdJwt = formSdJwt(ADDRESS_OPTION_2_JWT_ONLY, ADDRESS_OPTION_2_DISCLOSURES.slice(0, 1))
+      const decoded = decodeSdJWT(sdJwt, true)
+      expect(decoded).toMatchObject(ADDRESS_SUBSET_DECODED)
+    })
   })
 
   describe('verifySdJWT()', () => {
-    it('ignores undisclosed digests', () => {})
-
     it('rejects an ill-formed SD-JWT', () => {})
 
     it('rejects an SD-JWT with an invalid signature', () => {})
@@ -399,15 +402,6 @@ describe('SD-JWT()', () => {
     it('rejects an SD-JWT with a repeated claim', () => {})
 
     it('rejects an SD-JWT with digests found more than once', () => {})
-  })
-
-  describe('E2E - Holder', () => {
-    it('reveals a subset of disclosures', () => {
-      // Step 0: holder receives EXAMPLE_1_JWT from issuer
-
-      const decoded = decodeSdJWT(EXAMPLE_1_JWT, true)
-      expect(decoded).toMatchObject(EXAMPLE_1_DECODED)
-    })
   })
 
   describe('E2E - Verifier', () => {})
