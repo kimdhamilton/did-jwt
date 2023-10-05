@@ -121,8 +121,10 @@ export function decodeSdJWT(sdJwt: string, recurse: boolean = true): SdJWTDecode
 
   const sdAlg = decodedJwt.payload._sd_alg || DEFAULT_SD_ALG
   const disclosureMap = buildDigestDisclosureMap(disclosures, sdAlg)
+  console.log('chkpt1')
   const converted = expandDisclosures(decodedJwt.payload, disclosureMap, recurse) as JWTPayload
   delete converted['_sd_alg']
+  console.log('chkpt2: ' + JSON.stringify(converted))
 
   const decodedSdJwt: SdJWTDecoded = {
     ...decodedJwt,
@@ -376,6 +378,20 @@ function encodeDisclosure(disclosure: Disclosure, specCompatStringify: boolean =
 }
 
 /**
+ * TODO: add tests for this. Used for manual constructing of disclosures
+ * @param disclosureArray
+ * @returns
+ */
+export function encodeDisclosureArray(disclosureArray: string[]) {
+  if (disclosureArray.length < 2 || disclosureArray.length > 3) {
+    throw new Error('Unsupported disclosure array')
+  }
+  const stringified = JSON.stringify(disclosureArray)
+  const asBytes = stringToBytes(stringified)
+  return bytesToBase64url(asBytes)
+}
+
+/**
  * Convert disclosure object to an array of strings and JSONValues
  *
  * @param {Disclosure} disclosure
@@ -519,13 +535,14 @@ export function expandDisclosures(
           const disclosure = disclosureMap.get(digest) as string
           const parsed = parseObjectPropertyDisclosure(disclosure)
           if (!isValidDisclosureKey(parsed.key)) {
-            throw new Error(`Invalid disclosure key: ${parsed.key}`)
+            throw new Error('Invalid disclosure key')
           }
           return parsed
         })
       asObjectDisclosures.forEach((d) => {
         if (d.key in wip) {
-          throw new Error(`Duplicate key: ${d}`)
+          console.log('todo removeme:')
+          throw new Error('Duplicate key in disclosure')
         } else {
           let value = d.value
           if (recurse) {
@@ -578,12 +595,14 @@ export function parseObjectPropertyDisclosure(encodedDisclosure: string): Object
   const parsed = JSON.parse(decoded)
 
   if (!Array.isArray(parsed)) {
-    throw new Error(`Invalid disclosure format: ${parsed}`)
+    console.log('todo 75453ewfs')
+    throw new Error('Invalid disclosure format')
   }
 
   const disclosureArray = parsed as JSONValue[]
 
   if (disclosureArray.length !== 3) {
+    console.log('todo 45wfsdg43')
     throw new Error(`Disclosure array length is not supported`)
   }
 

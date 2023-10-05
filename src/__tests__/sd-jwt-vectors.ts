@@ -293,3 +293,21 @@ export const ARRAY_ELEMENT_DISCLOSURE_TEST_CASES = [
     defaultDisclosure: 'WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwiREUiXQ',
   },
 ]
+
+/*
+    This is an unsupported SD-JWT. It has a repeated claim, hiddenValue1: "value1",
+    in the clear and _sd claims / disclosures.
+
+    {
+        "_sd_alg": "sha-256",
+        "_sd": [
+            "ZALDwLOxAxL4V0GwtlpfYwUh--w-XfAQQ3WyYBnDak0",
+            "Pq7Mj2hPb-DjVuEH54D3HPTMfahASjmj2V9qOdRws2A"
+        ],
+        "clearValue1": "value3",
+        "hiddenValue1": "value1",
+        "iss": "did:ethr:0xf3beac30c498d9e26865f34fcaa57dbb935b0d74"
+    } 
+*/
+export const SD_JWT_REPEATED_CLAIM =
+  'eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE2OTY1MzEzMTcsImhpZGRlblZhbHVlMSI6InZhbHVlMSIsIl9zZF9hbGciOiJzaGEtMjU2IiwiX3NkIjpbIlpBTER3TE94QXhMNFYwR3d0bHBmWXdVaC0tdy1YZkFRUTNXeVlCbkRhazAiLCJQcTdNajJoUGItRGpWdUVINTREM0hQVE1mYWhBU2ptajJWOXFPZFJ3czJBIl0sImNsZWFyVmFsdWUxIjoidmFsdWUzIiwiaXNzIjoiZGlkOmV0aHI6MHhmM2JlYWMzMGM0OThkOWUyNjg2NWYzNGZjYWE1N2RiYjkzNWIwZDc0In0._yjhqC2nyg9cBg0Uq6SwMWHhfQ3MJKfa5eTFYNSwDE5CuXknuZ9VKlVVCA0eB9kSN3D8RTM_ILi3b1QfpNd_rw~WyJsNW1UMEp0b0pOVEc2SzJPLWM5Nmp3IiwiaGlkZGVuVmFsdWUxIiwidmFsdWUxIl0~WyJUN2VzRUJaOVdybmV1NXNraEMyRXN3IiwiaGlkZGVuVmFsdWUyIiwidmFsdWUyIl0~'

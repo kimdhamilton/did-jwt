@@ -13,7 +13,7 @@ import {
   sdJwtPayloadHelper,
 } from '../SD-JWT.js'
 import { ES256KSigner } from '../signers/ES256KSigner.js'
-import { hexToBytes } from '../util.js'
+import { bytesToBase64url, hexToBytes, stringToBytes } from '../util.js'
 import {
   ARRAY_ELEMENT_DISCLOSURE_TEST_CASES,
   ADDRESS_OPTION_1,
@@ -34,7 +34,9 @@ import {
   ADDRESS_OPTION_3_SD_JWT,
   ADDRESS_OPTION_2_JWT_ONLY,
   ADDRESS_SUBSET_DECODED,
+  SD_JWT_REPEATED_CLAIM,
 } from './sd-jwt-vectors.js'
+import { verifyJWT } from '../JWT.js'
 
 describe('SD-JWT()', () => {
   const BASE64_URL_REGEX = new RegExp(/^[-A-Za-z0-9_/]*={0,3}$/)
@@ -60,6 +62,46 @@ describe('SD-JWT()', () => {
   const privateKey = '278a5de700e29faae8e40e366ec5012b5ec63d36ec77e8a2417154cc1d25383f'
   const publicKey = '03fdd57adec3d438ea237fe46b33ee1e016eda6b585c3e27ea66686c2ea5358479'
   const signer = ES256KSigner(hexToBytes(privateKey))
+
+  const didDoc = {
+    didDocument: {
+      '@context': 'https://w3id.org/did/v1',
+      id: did,
+      verificationMethod: [
+        {
+          id: `${did}#keys-1`,
+          type: 'JsonWebKey2020',
+          controller: did,
+          publicKeyHex: publicKey,
+        },
+      ],
+      authentication: [`${did}#keys-1`],
+      assertionMethod: [`${did}#keys-1`],
+      capabilityInvocation: [`${did}#keys-1`],
+      capabilityDelegation: [`${did}#some-key-that-does-not-exist`],
+    },
+  }
+
+  const resolver = {
+    resolve: jest.fn(async (didUrl: string) => {
+      if (didUrl.includes(did)) {
+        return {
+          didDocument: didDoc.didDocument,
+          didDocumentMetadata: {},
+          didResolutionMetadata: { contentType: 'application/did+ld+json' },
+        }
+      }
+
+      return {
+        didDocument: null,
+        didDocumentMetadata: {},
+        didResolutionMetadata: {
+          error: 'notFound',
+          message: 'resolver_error: DID document not found',
+        },
+      }
+    }),
+  } as Resolvable
 
   describe('createSalt()', () => {
     it('returns a string that is base64url encoded', () => {
@@ -234,48 +276,22 @@ describe('SD-JWT()', () => {
         expect(decoded).toMatchObject({ key, value, salt })
       }
     )
+
+    it('rejects an ill-formed disclosure', async () => {
+      const salt = createSalt()
+
+      const badDisclosure = [salt, 'address', 'Schulstr. 12', 'extraneous input']
+      const stringified = JSON.stringify(badDisclosure)
+      const asBytes = stringToBytes(stringified)
+      const encdoedDisclosure = bytesToBase64url(asBytes)
+
+      console.log(encdoedDisclosure)
+
+      expect(() => parseObjectPropertyDisclosure(encdoedDisclosure)).toThrowError()
+    })
   })
 
   describe('createSdJWT()', () => {
-    const didDoc = {
-      didDocument: {
-        '@context': 'https://w3id.org/did/v1',
-        id: did,
-        verificationMethod: [
-          {
-            id: `${did}#keys-1`,
-            type: 'JsonWebKey2020',
-            controller: did,
-            publicKeyHex: publicKey,
-          },
-        ],
-        authentication: [`${did}#keys-1`],
-        assertionMethod: [`${did}#keys-1`],
-        capabilityInvocation: [`${did}#keys-1`],
-        capabilityDelegation: [`${did}#some-key-that-does-not-exist`],
-      },
-    }
-
-    const resolver = {
-      resolve: jest.fn(async (didUrl: string) => {
-        if (didUrl.includes(did)) {
-          return {
-            didDocument: didDoc.didDocument,
-            didDocumentMetadata: {},
-            didResolutionMetadata: { contentType: 'application/did+ld+json' },
-          }
-        }
-
-        return {
-          didDocument: null,
-          didDocumentMetadata: {},
-          didResolutionMetadata: {
-            error: 'notFound',
-            message: 'resolver_error: DID document not found',
-          },
-        }
-      }),
-    } as Resolvable
     it('creates an SD-JWT (without key binding)', async () => {
       const expected = {
         header: {
@@ -352,6 +368,45 @@ describe('SD-JWT()', () => {
       const result = await verifySdJWT(sdJwt, { resolver })
       expect(result.verified).toBeTruthy()
     })
+
+    it('rejects unsupported sd_alg', async () => {
+      // TODO: share error example
+      const { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(
+        { hiddenValue1: 'value1', hiddenValue2: 'value2' },
+        { clearValue1: 'value3' }
+      )
+
+      sdJwtPayload._sd_alg = 'unsupported'
+
+      expect(
+        await createSdJWT(sdJwtPayload, {
+          issuer: did,
+          signer,
+          disclosures: [...digestDislosureMap.values()],
+        })
+      ).rejects.toThrowError()
+    })
+
+    it('fails when a repeated claim seen', async () => {
+      // TODO: share error examples
+      let { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(
+        { hiddenValue1: 'value1', hiddenValue2: 'value2' },
+        { clearValue1: 'value3' }
+      )
+
+      sdJwtPayload = {
+        hiddenValue1: 'value1',
+        ...sdJwtPayload,
+      }
+
+      expect(
+        await createSdJWT(sdJwtPayload, {
+          issuer: did,
+          signer,
+          disclosures: [...digestDislosureMap.values()],
+        })
+      ).rejects.toThrowError()
+    })
   })
 
   describe('decodeSdJWT()', () => {
@@ -387,6 +442,10 @@ describe('SD-JWT()', () => {
       const decoded = decodeSdJWT(sdJwt, true)
       expect(decoded).toMatchObject(ADDRESS_SUBSET_DECODED)
     })
+
+    it('fails when a repeated claim seen', async () => {
+      expect(() => decodeSdJWT(SD_JWT_REPEATED_CLAIM, true)).toThrowError()
+    })
   })
 
   describe('verifySdJWT()', () => {
@@ -394,12 +453,43 @@ describe('SD-JWT()', () => {
 
     it('rejects an SD-JWT with an invalid signature', () => {})
 
-    it('rejects an SD-JWT with unsupported sd_alg', () => {})
+    it('rejects an SD-JWT with unsupported sd_alg', () => {
+      const unsupportedSdAlgExample =
+        'eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.eyJpYXQiOjE2OTY1MzA2MDUsIl9zZF9hbGciOiJ1bnN1cHBvcnRlZCIsIl9zZCI6WyI3bm01MkR5eVNJQUlRUXA2bjlfLV80M3o3eTR1MnFqV2ZBUmdpWl93TmNNIiwiNUdmMG4tWlpNdXZONng1bEkxTG1LckNMWDdVMWtYUmpQN2RFMlBvemh1RSJdLCJjbGVhclZhbHVlMSI6InZhbHVlMyIsImlzcyI6ImRpZDpldGhyOjB4ZjNiZWFjMzBjNDk4ZDllMjY4NjVmMzRmY2FhNTdkYmI5MzViMGQ3NCJ9.dLP8epxmB5sBmVkkPy-SstzBpnRXXWqQDKtcbL9ZDo5J1FapbX9ZArZ1ZPKwIf2j74s60Vukg8IAg0ys-sezyg'
+
+      const { sdJwtPayload, digestDislosureMap } = sdJwtPayloadHelper(
+        { hiddenValue1: 'value1', hiddenValue2: 'value2' },
+        { clearValue1: 'value3' }
+      )
+
+      const sdJwt = formSdJwt(unsupportedSdAlgExample, [...digestDislosureMap.values()])
+      expect(verifySdJWT(sdJwt, { resolver })).rejects.toThrowError()
+    })
 
     it('rejects an SD-JWT with an ill-formed array disclosure', () => {})
-    it('rejects an SD-JWT with an ill-formed object disclosure', () => {})
+    it('rejects an SD-JWT with an ill-formed object disclosure', () => {
+      // TODO: test this everywhere
+      const salt = createSalt()
 
-    it('rejects an SD-JWT with a repeated claim', () => {})
+      const badDisclosure = [salt, 'address', 'Schulstr. 12', 'extraneous input']
+      const stringified = JSON.stringify(badDisclosure)
+      const asBytes = stringToBytes(stringified)
+      const encdoedDisclosure = bytesToBase64url(asBytes)
+
+      const sdJwt = formSdJwt(ADDRESS_OPTION_2_JWT_ONLY, [encdoedDisclosure])
+      const verified = verifySdJWT(sdJwt, { resolver })
+      // TODO: this should fail
+      console.log(JSON.stringify(verified))
+      // TODO: this should fail
+      const decoded = decodeSdJWT(sdJwt, true)
+      expect(decoded).toMatchObject(ADDRESS_SUBSET_DECODED)
+      // parseObjectPropertyDisclosure
+    })
+
+    it('rejects an SD-JWT with a repeated claim', async () => {
+      // TODO: question: should this throw or return a false result?
+      expect(verifySdJWT(SD_JWT_REPEATED_CLAIM, { resolver })).rejects.toThrowError('Duplicate key in disclosure')
+    })
 
     it('rejects an SD-JWT with digests found more than once', () => {})
   })

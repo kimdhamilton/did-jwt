@@ -66,8 +66,9 @@ export { base64ToBytes, base58ToBytes, hexToBytes, genX25519EphemeralKeyPair } f
 export * from './Errors.js'
 
 export {
+  createSdJWT,
+  decodeSdJWT,
+  verifySdJWT,
   createArrayElementDisclosure,
   createObjectPropertyDisclosure,
-  makeSelectivelyDisclosable as createSelectiveDisclosures,
-  decodeSdJWT,
 } from './SD-JWT.js'
